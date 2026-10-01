@@ -52,6 +52,8 @@ namespace PredatorControlApp
             }
         }
 
+        internal void ResetConnection() => InvalidateCache();
+
         private void InvalidateCache()
         {
             lock (_lock)
@@ -275,6 +277,26 @@ namespace PredatorControlApp
                 return false;
             }
         }
+        public bool? GetBatteryChargeLimit()
+        {
+            try
+            {
+                using var obj = GetBatteryControlObject();
+                if (obj == null) return null;
+
+                using var inParams = obj.GetMethodParameters("GetBatteryHealthControlStatus");
+                inParams["uBatteryNo"] = (byte)1;
+
+                using var outParams = obj.InvokeMethod("GetBatteryHealthControlStatus", inParams, null);
+                ushort status = Convert.ToUInt16(outParams["uFunctionStatus"]);
+                return status == 1;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         public bool IsBatteryControlSupported()
         {
             try

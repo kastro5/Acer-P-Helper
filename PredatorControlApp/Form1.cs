@@ -165,6 +165,7 @@ namespace PredatorControlApp
         
         private PredatorButton? _activePowerBtn, _activeFanBtn, _activeDisplayBtn;
         private bool _isUpdatingBattery;
+        private int _batteryLimitCheckTicks;
 
         private PredatorDropDown _cboAcProfile = null!, _cboBatteryProfile = null!;
         private Label _lblAcProfileHdr = null!, _lblBatteryProfileHdr = null!;
@@ -272,6 +273,7 @@ namespace PredatorControlApp
                 {
                     MigrateLegacyStartup();
                     bool enabled = IsStartupEnabled();
+                    if (enabled) RepairStartupTaskPath();
                     try
                     {
                         BeginInvoke(new Action(() =>
@@ -746,7 +748,10 @@ namespace PredatorControlApp
                 ApplyBatteryLimit(_switchBatteryLimit.Checked);
             };
 
-            y += switchH + S(12);
+            y += switchH + S(20);
+            MakeSectionHeader("STARTUP", pad, y);
+
+            y += S(24);
             _lblStartupStatus = MakeLabel("Start with Windows", pad, y, FontBody, SubHeaderColor);
             CenterV(_lblStartupStatus, y, switchH);
 
@@ -1306,7 +1311,7 @@ namespace PredatorControlApp
             finally { _isGameSyncOverriding = false; }
         }
 
-        private async Task RestoreSnapshot(DashboardSnapshot snap)
+        private async Task RestoreSnapshot(DashboardSnapshot snap, bool skipRgb = false)
         {
             ApplyPowerMode(snap.PowerMode, PowerByteToBtn(snap.PowerMode));
             ApplyFanMode(snap.FanMode, FanByteToBtn(snap.FanMode));
@@ -1341,6 +1346,8 @@ namespace PredatorControlApp
                 ApplyDisplayMode(snap.RefreshRate, snap.RefreshRate <= 60 ? _btn60Hz : _btnMaxHz);
 
             ApplyBatteryLimit(snap.BatteryLimit == 1);
+
+            if (skipRgb) return;
 
             await Task.Delay(500);
             if (IsDisposed) return;
@@ -1538,6 +1545,7 @@ namespace PredatorControlApp
                 _isPluggedIn = null;
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
+                _wmi.ResetConnection();
 
                 var snap = CaptureCurrentState();
                 snap.RefreshRate = _activeDisplayBtn == _btn60Hz ? 60 : _maxHz;
@@ -1545,7 +1553,8 @@ namespace PredatorControlApp
                 await Task.Delay(3000);
                 if (_isClosing || IsDisposed) return;
 
-                await RestoreSnapshot(snap);
+                bool onBattery = SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Online;
+                await RestoreSnapshot(snap, skipRgb: onBattery);
             }
             catch (Exception ex) { Program.Report(ex, false); }
             finally
@@ -1599,20 +1608,10 @@ namespace PredatorControlApp
             }
 
             _cpuTemp = _wmi.CpuTemp;
+            _gpuTemp = _wmi.GpuTemp;
 
             int cpuRpm = _wmi.CpuFanRpm;
-            int gpuRpm;
-
-            if (_isPluggedIn == true)
-            {
-                _gpuTemp = _wmi.GpuTemp;
-                gpuRpm = _wmi.GpuFanRpm;
-            }
-            else
-            {
-                _gpuTemp = 0;
-                gpuRpm = 0;
-            }
+            int gpuRpm = _wmi.GpuFanRpm;
 
             _lblCpuTemp.Text = _cpuTemp > 0 ? $"{_cpuTemp}°C" : "--°C";
             _lblGpuTemp.Text = _gpuTemp > 0 ? $"{_gpuTemp}°C" : "--°C";
@@ -1628,6 +1627,17 @@ namespace PredatorControlApp
                 _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
 
             ApplyFanCurve();
+
+            if (++_batteryLimitCheckTicks >= 15)
+            {
+                _batteryLimitCheckTicks = 0;
+                if (_switchBatteryLimit.Enabled && _switchBatteryLimit.Checked)
+                {
+                    bool? actual = _wmi.GetBatteryChargeLimit();
+                    if (actual == false)
+                        _wmi.SetBatteryChargeLimit(true);
+                }
+            }
         }
 
         private void ApplyFanCurve()
@@ -1731,16 +1741,12 @@ namespace PredatorControlApp
 
             byte fanMode = idx switch { 1 => 0x01, 2 => 0x02, _ => 0x03 };
 
-            if (fanMode == 0x03)
-            {
-                _fanCurveEnabled = false;
-                _lastCurveCpuSpeed = -1;
-                _lastCurveGpuSpeed = -1;
-            }
+            _lastCurveCpuSpeed = -1;
+            _lastCurveGpuSpeed = -1;
 
             ApplyFanMode(fanMode, FanByteToBtn(fanMode));
 
-            if (fanMode == 0x03)
+            if (fanMode == 0x03 && !_fanCurveEnabled)
             {
                 string suffix = pluggedIn ? "AC" : "Battery";
                 try
@@ -1927,6 +1933,31 @@ namespace PredatorControlApp
             {
                 using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
                 key?.DeleteValue(StartupTaskName, false);
+            }
+            catch { }
+        }
+
+        private static void RepairStartupTaskPath()
+        {
+            try
+            {
+                using var p = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "schtasks.exe",
+                    Arguments = $"/Query /TN \"{StartupTaskName}\" /XML",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                });
+                if (p == null) return;
+                string xml = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(15000);
+
+                string currentExe = Application.ExecutablePath;
+                if (xml.Contains(currentExe, StringComparison.OrdinalIgnoreCase)) return;
+
+                SetStartupEnabled(true);
             }
             catch { }
         }

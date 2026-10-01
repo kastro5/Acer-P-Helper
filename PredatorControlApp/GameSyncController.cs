@@ -12,7 +12,8 @@ namespace PredatorControlApp
         private readonly string _savePath;
 
         private bool _enabled;
-        private string? _activeExe;                   
+        private bool _polling;
+        private string? _activeExe;
         private DashboardSnapshot? _savedSnapshot;    
 
         public event Action<GameProfile>? GameDetected;
@@ -139,36 +140,43 @@ namespace PredatorControlApp
             }
         }
 
-        private void PollProcesses(object? sender, EventArgs e)
+        private async void PollProcesses(object? sender, EventArgs e)
         {
-            if (!_enabled || _profiles.Count == 0) return;
-
-            if (_activeExe != null)
+            if (!_enabled || _profiles.Count == 0 || _polling) return;
+            _polling = true;
+            try
             {
-                string nameWithoutExe = Path.GetFileNameWithoutExtension(_activeExe);
-                bool stillRunning = IsProcessActive(nameWithoutExe);
+                if (_activeExe != null)
+                {
+                    string nameWithoutExe = Path.GetFileNameWithoutExtension(_activeExe);
+                    bool stillRunning = await Task.Run(() => IsProcessActive(nameWithoutExe));
 
-                if (!stillRunning)
-                {
-                    var snapshot = _savedSnapshot;
-                    _activeExe = null;
-                    _savedSnapshot = null;
-                    if (snapshot != null)
-                        GameExited?.Invoke(snapshot);
-                }
-            }
-            else
-            {
-                foreach (var profile in _profiles)
-                {
-                    string nameWithoutExe = Path.GetFileNameWithoutExtension(profile.ExecutableName);
-                    if (IsProcessActive(nameWithoutExe))
+                    if (!stillRunning)
                     {
-                        _activeExe = profile.ExecutableName;
-                        GameDetected?.Invoke(profile);
-                        break;
+                        var snapshot = _savedSnapshot;
+                        _activeExe = null;
+                        _savedSnapshot = null;
+                        if (snapshot != null)
+                            GameExited?.Invoke(snapshot);
                     }
                 }
+                else
+                {
+                    foreach (var profile in _profiles)
+                    {
+                        string nameWithoutExe = Path.GetFileNameWithoutExtension(profile.ExecutableName);
+                        if (await Task.Run(() => IsProcessActive(nameWithoutExe)))
+                        {
+                            _activeExe = profile.ExecutableName;
+                            GameDetected?.Invoke(profile);
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _polling = false;
             }
         }
 
