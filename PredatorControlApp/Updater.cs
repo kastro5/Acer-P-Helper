@@ -31,7 +31,7 @@ namespace PredatorControlApp
         {
             v = new Version(0, 0, 0);
             if (string.IsNullOrEmpty(tag)) return false;
-            if (!Version.TryParse(tag.TrimStart('v', 'V').Trim(), out var parsed)) return false;
+            if (!Version.TryParse(tag.TrimStart('v', 'V', '.').Trim(), out var parsed)) return false;
             v = Norm(parsed);
             return true;
         }
