@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PROJECT: PredatorControlApp/PredatorControlApp.csproj
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build (Debug)
+        run: dotnet build ${{ env.PROJECT }} -c Debug
+
+      # SelfCheck only runs in Debug builds; a failed assert kills the process with a non-zero exit code.
+      - name: Run self-checks
+        shell: pwsh
+        run: |
+          $exe = "PredatorControlApp/bin/Debug/net10.0-windows/PredatorControlApp.exe"
+          $p = Start-Process $exe -ArgumentList '--selfcheck' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-checks failed (exit code $($p.ExitCode))" }
+          Write-Host "Self-checks passed"
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained false `
+            -p:PublishSingleFile=true -o out/light
+          dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out/standalone
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item out/light/PredatorControlApp.exe dist/PredatorControl.exe
+          Copy-Item out/standalone/PredatorControlApp.exe dist/PredatorControl-standalone.exe
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PredatorControl-build-${{ github.run_number }}
+          path: dist/

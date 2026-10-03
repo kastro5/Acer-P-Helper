@@ -46,6 +46,9 @@ namespace PredatorControlApp
             ApplicationConfiguration.Initialize();
             SelfCheck.Run();
 
+            // CI entry point: a failed Debug.Assert terminates the process with a non-zero exit code.
+            if (Environment.GetCommandLineArgs().Contains("--selfcheck")) return;
+
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) => Report(e.Exception, false);
 
