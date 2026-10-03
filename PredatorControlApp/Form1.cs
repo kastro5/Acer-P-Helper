@@ -162,6 +162,12 @@ namespace PredatorControlApp
         private List<Point> _gpuCurvePoints = new() { new(30,10), new(45,15), new(55,30), new(65,50), new(72,65), new(80,80), new(88,92), new(95,100) };
         private int _lastCurveCpuSpeed = -1;
         private int _lastCurveGpuSpeed = -1;
+        private readonly FanSpeedFilter _cpuFanFilter = new();
+        private readonly FanSpeedFilter _gpuFanFilter = new();
+        private int _curveUpDelay = FanSpeedFilter.DefaultUpDelay;
+        private int _curveDownDelay = FanSpeedFilter.DefaultDownDelay;
+        private int _cpuBypassTemp = FanSpeedFilter.DefaultCpuBypass;
+        private int _gpuBypassTemp = FanSpeedFilter.DefaultGpuBypass;
         
         private PredatorButton? _activePowerBtn, _activeFanBtn, _activeDisplayBtn;
         private bool _isUpdatingBattery;
@@ -694,6 +700,7 @@ namespace PredatorControlApp
                 _fanCurveEnabled = false;
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
+                ResetFanFilters();
                 HighlightBtn(_btnFixedSpeed, ref _activeCustomSubBtn);
                 SaveState("FanCurveEnabled", 0);
 
@@ -1013,6 +1020,7 @@ namespace PredatorControlApp
             {
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
+                ResetFanFilters();
                 if (_activeCustomSubBtn != null)
                 {
                     _activeCustomSubBtn.IsActive = false;
@@ -1040,15 +1048,21 @@ namespace PredatorControlApp
             _fanCurveForm = new FanCurveForm();
             _fanCurveForm.SetCpuCurve(_cpuCurvePoints);
             _fanCurveForm.SetGpuCurve(_gpuCurvePoints);
+            _fanCurveForm.SetFilterSettings(_curveUpDelay, _curveDownDelay, _cpuBypassTemp, _gpuBypassTemp);
             _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
 
             _fanCurveForm.ApplyClicked += (s, args) =>
             {
                 _cpuCurvePoints = args.CpuPoints;
                 _gpuCurvePoints = args.GpuPoints;
+                _curveUpDelay = args.UpDelay;
+                _curveDownDelay = args.DownDelay;
+                _cpuBypassTemp = args.CpuBypass;
+                _gpuBypassTemp = args.GpuBypass;
 
-                int cpuSpeed = _fanCurveForm!.InterpolateCpuSpeed(_cpuTemp);
-                int gpuSpeed = _fanCurveForm!.InterpolateGpuSpeed(_gpuTemp);
+                ResetFanFilters();
+                int cpuSpeed = SeedCpuCurveSpeed();
+                int gpuSpeed = SeedGpuCurveSpeed();
 
                 bool cpuOk = _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                 bool gpuOk = _wmi.SetGpuFanSpeed((byte)gpuSpeed);
@@ -1069,6 +1083,10 @@ namespace PredatorControlApp
                     SaveCurveToRegistry("CpuCurve", _cpuCurvePoints);
                     SaveCurveToRegistry("GpuCurve", _gpuCurvePoints);
                     SaveState("FanCurveEnabled", 1);
+                    SaveState("FanCurveUpDelay", _curveUpDelay);
+                    SaveState("FanCurveDownDelay", _curveDownDelay);
+                    SaveState("FanCurveCpuBypass", _cpuBypassTemp);
+                    SaveState("FanCurveGpuBypass", _gpuBypassTemp);
                 }
             };
 
@@ -1450,6 +1468,15 @@ namespace PredatorControlApp
                 if (loadedCpu != null) _cpuCurvePoints = loadedCpu;
                 if (loadedGpu != null) _gpuCurvePoints = loadedGpu;
 
+                _curveUpDelay = FanSpeedFilter.Snap(FanSpeedFilter.DelayPresets,
+                    GetInt(key, "FanCurveUpDelay", FanSpeedFilter.DefaultUpDelay, 0, 600));
+                _curveDownDelay = FanSpeedFilter.Snap(FanSpeedFilter.DelayPresets,
+                    GetInt(key, "FanCurveDownDelay", FanSpeedFilter.DefaultDownDelay, 0, 600));
+                _cpuBypassTemp = FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets,
+                    GetInt(key, "FanCurveCpuBypass", FanSpeedFilter.DefaultCpuBypass, 0, 120));
+                _gpuBypassTemp = FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets,
+                    GetInt(key, "FanCurveGpuBypass", FanSpeedFilter.DefaultGpuBypass, 0, 120));
+
                 int savedCurveEnabled = GetInt(key, "FanCurveEnabled", 0, 0, 1);
                 if (savedCurveEnabled == 1 && fanMode == 0x03)
                     _fanCurveEnabled = true;
@@ -1460,8 +1487,9 @@ namespace PredatorControlApp
                 {
                     if (_fanCurveEnabled)
                     {
-                        int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-                        int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+                        ResetFanFilters();
+                        int cpuSpeed = SeedCpuCurveSpeed();
+                        int gpuSpeed = SeedGpuCurveSpeed();
                         _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                         _wmi.SetGpuFanSpeed((byte)gpuSpeed);
                         _lastCurveCpuSpeed = cpuSpeed;
@@ -1545,6 +1573,7 @@ namespace PredatorControlApp
                 _isPluggedIn = null;
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
+                ResetFanFilters();
                 _wmi.ResetConnection();
 
                 var snap = CaptureCurrentState();
@@ -1623,10 +1652,15 @@ namespace PredatorControlApp
 
             _trayIcon.Text = $"Predator Control\nCPU: {(_cpuTemp > 0 ? $"{_cpuTemp}°C" : "N/A")}  GPU: {(_gpuTemp > 0 ? $"{_gpuTemp}°C" : "N/A")}";
 
-            if (_fanCurveForm != null && !_fanCurveForm.IsDisposed)
-                _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
-
             ApplyFanCurve();
+
+            if (_fanCurveForm != null && !_fanCurveForm.IsDisposed)
+            {
+                _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
+                bool curveActive = _fanCurveEnabled && GetCurrentFanByte() == 0x03;
+                _fanCurveForm.UpdateHeldSpeeds(curveActive ? _cpuFanFilter.HeldSpeed : -1,
+                                               curveActive ? _gpuFanFilter.HeldSpeed : -1);
+            }
 
             if (++_batteryLimitCheckTicks >= 15)
             {
@@ -1642,14 +1676,24 @@ namespace PredatorControlApp
 
         private void ApplyFanCurve()
         {
-            if (!_fanCurveEnabled) return;
-            if (GetCurrentFanByte() != 0x03) return;  
+            if (!_fanCurveEnabled || GetCurrentFanByte() != 0x03)
+            {
+                // Forget smoothing history so re-enabling the curve (e.g. after GameSync)
+                // applies the live temp at once instead of holding a stale speed.
+                ResetFanFilters();
+                _lastCurveCpuSpeed = -1;
+                _lastCurveGpuSpeed = -1;
+                return;
+            }
             if (_cpuTemp <= 0 && _gpuTemp <= 0) return; 
 
-            int cpuSpeed = InterpolateCurve(_cpuCurvePoints, _cpuTemp);
-            int gpuSpeed = InterpolateCurve(_gpuCurvePoints, _gpuTemp);
+            long now = Environment.TickCount64;
+            int cpuSpeed = _cpuFanFilter.Update(now, _cpuTemp, t => InterpolateCurve(_cpuCurvePoints, t),
+                                                _curveUpDelay, _curveDownDelay, _cpuBypassTemp);
+            int gpuSpeed = _gpuFanFilter.Update(now, _gpuTemp, t => InterpolateCurve(_gpuCurvePoints, t),
+                                                _curveUpDelay, _curveDownDelay, _gpuBypassTemp);
 
-            if (cpuSpeed != _lastCurveCpuSpeed)
+            if (cpuSpeed >= 0 && cpuSpeed != _lastCurveCpuSpeed)
             {
                 _wmi.SetCpuFanSpeed((byte)cpuSpeed);
                 _lastCurveCpuSpeed = cpuSpeed;
@@ -1658,7 +1702,7 @@ namespace PredatorControlApp
                 _lblCpuFanSpeedHdr.Text = $"CPU FAN: {cpuSpeed}%";
             }
 
-            if (gpuSpeed != _lastCurveGpuSpeed)
+            if (gpuSpeed >= 0 && gpuSpeed != _lastCurveGpuSpeed)
             {
                 _wmi.SetGpuFanSpeed((byte)gpuSpeed);
                 _lastCurveGpuSpeed = gpuSpeed;
@@ -1666,6 +1710,28 @@ namespace PredatorControlApp
                 _gpuFanSlider.Value = Math.Clamp(gpuSpeed, 10, 100);
                 _lblGpuFanSpeedHdr.Text = $"GPU FAN: {gpuSpeed}%";
             }
+        }
+
+        private void ResetFanFilters()
+        {
+            _cpuFanFilter.Reset();
+            _gpuFanFilter.Reset();
+        }
+
+        // Applies the live temp immediately (filter is empty after a reset). Before the
+        // first sensor read the temp is 0, so fall back to the curve's lowest point.
+        private int SeedCpuCurveSpeed()
+        {
+            int speed = _cpuFanFilter.Update(Environment.TickCount64, _cpuTemp, t => InterpolateCurve(_cpuCurvePoints, t),
+                                             _curveUpDelay, _curveDownDelay, _cpuBypassTemp);
+            return speed >= 0 ? speed : InterpolateCurve(_cpuCurvePoints, _cpuTemp);
+        }
+
+        private int SeedGpuCurveSpeed()
+        {
+            int speed = _gpuFanFilter.Update(Environment.TickCount64, _gpuTemp, t => InterpolateCurve(_gpuCurvePoints, t),
+                                             _curveUpDelay, _curveDownDelay, _gpuBypassTemp);
+            return speed >= 0 ? speed : InterpolateCurve(_gpuCurvePoints, _gpuTemp);
         }
 
         private static int InterpolateCurve(List<Point> curve, int temp)

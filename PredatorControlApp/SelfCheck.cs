@@ -29,6 +29,7 @@ namespace PredatorControlApp
             Debug.Assert(Form1.AcProfileValues[4] == 0x05, "AC Turbo must map to 0x05");
 
             CheckPowerLineDebounce();
+            CheckFanSpeedFilter();
         }
 
         private static void CheckPowerLineDebounce()
@@ -60,6 +61,73 @@ namespace PredatorControlApp
             Debug.Assert(unknownStart == false, "unresolved state must resolve after two agreeing samples");
 
             CheckUpdater();
+        }
+
+        [Conditional("DEBUG")]
+        private static void CheckFanSpeedFilter()
+        {
+            const int up = 20, down = 45, bypass = 90;
+            Func<int, int> linear = t => t;
+            long now = 0;
+            var f = new FanSpeedFilter();
+            int Feed(int temp, Func<int, int>? curve = null)
+            {
+                int r = f.Update(now, temp, curve ?? linear, up, down, bypass);
+                now += 2000;
+                return r;
+            }
+
+            Debug.Assert(Feed(50) == 50, "first sample must apply immediately");
+            for (int i = 0; i < 10; i++) Feed(50);
+
+            for (int i = 0; i < 3; i++)
+                Debug.Assert(Feed(80) == 50, "a 6s spike must not raise the fan");
+            for (int i = 0; i < 30; i++) Feed(50);
+
+            for (int i = 0; i < 10; i++)
+                Debug.Assert(Feed(80) == 50, "sustained heat must wait out the ramp-up delay");
+            Debug.Assert(Feed(80) == 80, "20s of sustained heat must raise the fan");
+            for (int i = 0; i < 20; i++) Feed(80);
+
+            for (int i = 0; i < 23; i++)
+                Debug.Assert(Feed(50) == 80, "fan must hold through the ramp-down delay");
+            Debug.Assert(Feed(50) == 50, "fan must drop once the ramp-down delay has passed");
+
+            Debug.Assert(Feed(92) == 92, "bypass temp must raise the fan immediately");
+            Debug.Assert(Feed(50) == 92, "bypass must not skip the ramp-down delay");
+
+            int before = f.HeldSpeed;
+            Debug.Assert(Feed(0) == before, "a failed sensor read must not change the speed");
+
+            f.Reset();
+            Debug.Assert(Feed(70) == 70, "the first sample after Reset must apply immediately");
+            Debug.Assert(Feed(85) == 70, "after Reset, ramp-up still needs a full window of history");
+
+            var fresh = new FanSpeedFilter();
+            Debug.Assert(fresh.Update(0, 0, linear, up, down, bypass) == -1 && fresh.HeldSpeed == -1,
+                "no valid sample means no speed");
+
+            var instant = new FanSpeedFilter();
+            long t0 = 0;
+            foreach (int temp in new[] { 50, 80, 60, 95, 40 })
+            {
+                Debug.Assert(instant.Update(t0, temp, linear, 0, 0, 0) == temp, "zero delays must follow the curve exactly");
+                t0 += 2000;
+            }
+
+            // Hotter means slower here, so a temp rise is a speed drop and must wait the ramp-down delay.
+            Func<int, int> inverted = t => t < 70 ? 60 : 30;
+            f.Reset();
+            Debug.Assert(Feed(50, inverted) == 60, "non-monotonic curve: initial speed");
+            for (int i = 0; i < 3; i++)
+                Debug.Assert(Feed(80, inverted) == 60, "non-monotonic curve: filter on speed, not temp");
+            for (int i = 0; i < 30; i++) Feed(80, inverted);
+            Debug.Assert(f.HeldSpeed == 30, "non-monotonic curve: sustained drop must apply after the delay");
+
+            Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.DelayPresets, 25) is 20 or 30, "snap must pick a neighbour");
+            Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.DelayPresets, 500) == 120, "snap must clamp high");
+            Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets, 87) == 85, "snap must pick nearest");
+            Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets, -5) == 0, "snap must clamp low");
         }
 
         [Conditional("DEBUG")]

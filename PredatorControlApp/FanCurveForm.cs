@@ -9,6 +9,10 @@ namespace PredatorControlApp
     {
         public List<Point> CpuPoints { get; set; } = new();
         public List<Point> GpuPoints { get; set; } = new();
+        public int UpDelay { get; set; }
+        public int DownDelay { get; set; }
+        public int CpuBypass { get; set; }
+        public int GpuBypass { get; set; }
         public bool Success { get; set; }
     }
 
@@ -30,6 +34,8 @@ namespace PredatorControlApp
         private static readonly Color FlashRed = Color.FromArgb(220, 50, 50);
 
         private static readonly Font FontTitle = new("Segoe UI", 10f, FontStyle.Bold);
+        private static readonly Font FontSettingLabel = new("Segoe UI", 7.5f, FontStyle.Bold);
+        private static readonly Color SettingLabelColor = Color.FromArgb(100, 100, 110);
 
         #endregion
 
@@ -37,6 +43,11 @@ namespace PredatorControlApp
 
         private FanCurveGraph _graphCpu = null!;
         private FanCurveGraph _graphGpu = null!;
+        private PredatorDropDown _cboUpDelay = null!;
+        private PredatorDropDown _cboDownDelay = null!;
+        private PredatorDropDown _cboCpuBypass = null!;
+        private PredatorDropDown _cboGpuBypass = null!;
+        private readonly ToolTip _toolTip = new();
         private PredatorButton _btnReset = null!;
         private PredatorButton _btnApply = null!;
         private System.Windows.Forms.Timer _flashTimer = null!;
@@ -46,6 +57,7 @@ namespace PredatorControlApp
         private const int TitleBarHeight = 36;
         private const int SepHeight = 1;
         private const int ButtonRowHeight = 50;
+        private const int SettingsRowHeight = 64;
 
         #endregion
 
@@ -92,6 +104,7 @@ namespace PredatorControlApp
             int totalHeight = TitleBarHeight + SepHeight
                             + GraphHeight + SepHeight
                             + GraphHeight + SepHeight
+                            + SettingsRowHeight + SepHeight
                             + ButtonRowHeight;
 
             int totalWidth = 460;
@@ -180,6 +193,12 @@ namespace PredatorControlApp
             Controls.Add(MakeSeparator(y));
             y += SepHeight;
 
+            BuildSettingsRow(y);
+            y += SettingsRowHeight;
+
+            Controls.Add(MakeSeparator(y));
+            y += SepHeight;
+
             int btnWidth = 96;
             int btnHeight = 34;
             int btnY = y + (ButtonRowHeight - btnHeight) / 2;
@@ -203,6 +222,54 @@ namespace PredatorControlApp
             Controls.Add(_btnApply);
         }
 
+        private void BuildSettingsRow(int top)
+        {
+            const int gap = 12;
+            const int dropHeight = 30;
+            int dropWidth = (ClientSize.Width - SidePad * 2 - gap * 3) / 4;
+            int labelY = top + 8;
+            int dropY = labelY + 18;
+
+            PredatorDropDown Add(int col, string label, string tip, int[] presets, Func<int, string> format)
+            {
+                int x = SidePad + col * (dropWidth + gap);
+                var lbl = new Label
+                {
+                    Text = label,
+                    Font = FontSettingLabel,
+                    ForeColor = SettingLabelColor,
+                    AutoSize = true,
+                    Location = new Point(x, labelY),
+                    BackColor = Color.Transparent
+                };
+                Controls.Add(lbl);
+
+                var cbo = new PredatorDropDown
+                {
+                    Location = new Point(x, dropY),
+                    Size = new Size(dropWidth, dropHeight)
+                };
+                foreach (int v in presets) cbo.Items.Add(format(v));
+                Controls.Add(cbo);
+
+                _toolTip.SetToolTip(lbl, tip);
+                _toolTip.SetToolTip(cbo, tip);
+                return cbo;
+            }
+
+            _cboUpDelay = Add(0, "RAMP UP", "Temperature must stay high this long before fans speed up",
+                FanSpeedFilter.DelayPresets, FanSpeedFilter.DelayLabel);
+            _cboDownDelay = Add(1, "RAMP DOWN", "Temperature must stay low this long before fans slow down",
+                FanSpeedFilter.DelayPresets, FanSpeedFilter.DelayLabel);
+            _cboCpuBypass = Add(2, "CPU BYPASS", "At or above this CPU temperature, ignore the ramp-up delay",
+                FanSpeedFilter.BypassPresets, FanSpeedFilter.BypassLabel);
+            _cboGpuBypass = Add(3, "GPU BYPASS", "At or above this GPU temperature, ignore the ramp-up delay",
+                FanSpeedFilter.BypassPresets, FanSpeedFilter.BypassLabel);
+
+            SetFilterSettings(FanSpeedFilter.DefaultUpDelay, FanSpeedFilter.DefaultDownDelay,
+                              FanSpeedFilter.DefaultCpuBypass, FanSpeedFilter.DefaultGpuBypass);
+        }
+
         private Panel MakeSeparator(int yPos)
         {
             return new Panel
@@ -221,6 +288,8 @@ namespace PredatorControlApp
         {
             _graphCpu.Points = _graphCpu.DefaultPoints;
             _graphGpu.Points = _graphGpu.DefaultPoints;
+            SetFilterSettings(FanSpeedFilter.DefaultUpDelay, FanSpeedFilter.DefaultDownDelay,
+                              FanSpeedFilter.DefaultCpuBypass, FanSpeedFilter.DefaultGpuBypass);
         }
 
         private void BtnApply_Click(object? sender, EventArgs e)
@@ -229,6 +298,10 @@ namespace PredatorControlApp
             {
                 CpuPoints = new List<Point>(_graphCpu.Points),
                 GpuPoints = new List<Point>(_graphGpu.Points),
+                UpDelay = FanSpeedFilter.DelayPresets[Math.Max(_cboUpDelay.SelectedIndex, 0)],
+                DownDelay = FanSpeedFilter.DelayPresets[Math.Max(_cboDownDelay.SelectedIndex, 0)],
+                CpuBypass = FanSpeedFilter.BypassPresets[Math.Max(_cboCpuBypass.SelectedIndex, 0)],
+                GpuBypass = FanSpeedFilter.BypassPresets[Math.Max(_cboGpuBypass.SelectedIndex, 0)],
                 Success = false
             };
 
@@ -259,6 +332,20 @@ namespace PredatorControlApp
             _graphGpu.CurrentTemp = gpuTemp;
         }
 
+        public void UpdateHeldSpeeds(int cpuSpeed, int gpuSpeed)
+        {
+            _graphCpu.HeldSpeed = cpuSpeed;
+            _graphGpu.HeldSpeed = gpuSpeed;
+        }
+
+        public void SetFilterSettings(int upDelay, int downDelay, int cpuBypass, int gpuBypass)
+        {
+            _cboUpDelay.SelectedIndex = FanSpeedFilter.NearestIndex(FanSpeedFilter.DelayPresets, upDelay);
+            _cboDownDelay.SelectedIndex = FanSpeedFilter.NearestIndex(FanSpeedFilter.DelayPresets, downDelay);
+            _cboCpuBypass.SelectedIndex = FanSpeedFilter.NearestIndex(FanSpeedFilter.BypassPresets, cpuBypass);
+            _cboGpuBypass.SelectedIndex = FanSpeedFilter.NearestIndex(FanSpeedFilter.BypassPresets, gpuBypass);
+        }
+
         public void SetCpuCurve(List<Point> points)
         {
             _graphCpu.Points = new List<Point>(points);
@@ -287,6 +374,7 @@ namespace PredatorControlApp
             {
                 _flashTimer?.Stop();
                 _flashTimer?.Dispose();
+                _toolTip.Dispose();
             }
             base.Dispose(disposing);
         }

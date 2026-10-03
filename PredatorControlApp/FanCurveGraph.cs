@@ -42,6 +42,7 @@ namespace PredatorControlApp
         private List<Point> _points;
         private Color _curveColor = Color.FromArgb(0, 180, 255);
         private int _currentTemp;
+        private int _heldSpeed = -1;
         private string _fanLabel = "FAN CURVE";
         private int _dragIndex = -1;
         private int _hoverIndex = -1;
@@ -60,6 +61,19 @@ namespace PredatorControlApp
         {
             get => _currentTemp;
             set { _currentTemp = value; Invalidate(); }
+        }
+
+        // Speed the fan is actually running at (after smoothing); -1 hides the marker.
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public int HeldSpeed
+        {
+            get => _heldSpeed;
+            set
+            {
+                if (_heldSpeed == value) return;
+                _heldSpeed = value;
+                Invalidate();
+            }
         }
 
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -235,6 +249,8 @@ namespace PredatorControlApp
         {
             int speed = InterpolateSpeed(_currentTemp);
             string status = $"{_currentTemp}°C → {speed}%";
+            if (_heldSpeed >= 0 && _heldSpeed != speed)
+                status += $" · fan {_heldSpeed}%";
 
             using var font = new Font("Segoe UI", 8f);
             using var brush = new SolidBrush(_curveColor);
@@ -299,6 +315,23 @@ namespace PredatorControlApp
             };
             using var fill = new SolidBrush(_curveColor);
             g.FillPolygon(fill, diamond);
+
+            if (_heldSpeed >= 0 && _heldSpeed != speed)
+            {
+                float hy = SpeedToY(_heldSpeed);
+                using var heldLine = new Pen(Color.FromArgb(60, _curveColor), 1f) { DashStyle = DashStyle.Dot };
+                g.DrawLine(heldLine, area.Left, hy, area.Right, hy);
+
+                PointF[] held =
+                {
+                    new(x, hy - d - 1),
+                    new(x + d + 1, hy),
+                    new(x, hy + d + 1),
+                    new(x - d - 1, hy)
+                };
+                using var outline = new Pen(_curveColor, 1.5f);
+                g.DrawPolygon(outline, held);
+            }
         }
 
         private void DrawControlPoints(Graphics g)
