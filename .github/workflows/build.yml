@@ -37,7 +37,8 @@ jobs:
           dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained false `
             -p:PublishSingleFile=true -o out/light
           dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained true `
-            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out/standalone
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
+            -o out/standalone
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item out/light/PredatorControlApp.exe dist/PredatorControl.exe
           Copy-Item out/standalone/PredatorControlApp.exe dist/PredatorControl-standalone.exe
