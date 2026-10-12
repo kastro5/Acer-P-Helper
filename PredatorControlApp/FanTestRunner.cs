@@ -221,7 +221,7 @@ namespace PredatorControlApp
                                            (int Up, int Down, int CpuBypass, int GpuBypass) s)
         {
             var r = new StepResult();
-            var inStep = rows.Where(x => x.Ms >= t.StartMs && x.Ms <= t.EndMs).ToList();
+            var inStep = rows.Where(x => x.Ms >= t.StartMs && x.Ms < t.EndMs).ToList();
             var sensors = inStep.Where(x => x.Type is "probe" or "tick").ToList();
             var ticks = inStep.Where(x => x.Type == "tick").ToList();
             var probes = inStep.Where(x => x.Type == "probe").ToList();
@@ -265,6 +265,12 @@ namespace PredatorControlApp
             r.GpuRpmMax = sensors.Select(x => x.GpuRpm ?? 0).DefaultIfEmpty(0).Max();
 
             var step = t.Step;
+            if (step.Kind != TestKind.Firmware && r.CpuHeldStart < 0)
+            {
+                r.Verdict = "No curve data: the fan curve wasn't active during this step.";
+                return r;
+            }
+
             switch (step.Kind)
             {
                 case TestKind.Idle:

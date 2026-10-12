@@ -45,6 +45,7 @@ jobs:
             Expand-Archive $zip.FullName -DestinationPath smoke-report -Force
             Get-ChildItem smoke-report | Format-Table Name, Length
             Get-Content smoke-report/summary.txt
+            Get-Content (Get-ChildItem smoke-report -Filter "fantest-*.csv").FullName -TotalCount 12
           }
           if ($p.ExitCode -ne 0) { throw "Fan test smoke run failed (exit code $($p.ExitCode))" }
 
