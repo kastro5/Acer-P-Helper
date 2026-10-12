@@ -284,8 +284,8 @@ namespace PredatorControlApp
 
                 case TestKind.Light:
                     r.BypassRaised = r.BypassTicks > 0;
-                    r.Verdict = r.RaiseAfterLoadStartSec is double up
-                        ? $"Fan rose from {r.CpuHeldStart}% to {r.CpuHeldMax}% at +{up:0} s{(r.BypassRaised ? " (bypass fired)" : "")}. A long light load is enough to need more fan with this curve."
+                    r.Verdict = r.RaiseAfterLoadStartSec is double riseAt
+                        ? $"Fan rose from {r.CpuHeldStart}% to {r.CpuHeldMax}% at +{riseAt:0} s{(r.BypassRaised ? " (bypass fired)" : "")}. A long light load is enough to need more fan with this curve."
                         : $"No change. Light load stayed within the curve (CPU max {r.CpuTempMax}°C).";
                     break;
 
