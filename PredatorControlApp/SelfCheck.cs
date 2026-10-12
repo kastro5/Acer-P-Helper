@@ -30,6 +30,7 @@ namespace PredatorControlApp
 
             CheckPowerLineDebounce();
             CheckFanSpeedFilter();
+            CheckFanDiagnostics();
         }
 
         private static void CheckPowerLineDebounce()
@@ -128,6 +129,63 @@ namespace PredatorControlApp
             Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.DelayPresets, 500) == 120, "snap must clamp high");
             Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets, 87) == 85, "snap must pick nearest");
             Debug.Assert(FanSpeedFilter.Snap(FanSpeedFilter.BypassPresets, -5) == 0, "snap must clamp low");
+        }
+
+        [Conditional("DEBUG")]
+        private static void CheckFanDiagnostics()
+        {
+            Func<int, int> linear = t => t;
+
+            var f = new FanSpeedFilter();
+            f.Update(0, 50, linear, 20, 45, 90);
+            f.Update(2000, 95, linear, 20, 45, 90);
+            Debug.Assert(f.LastBypassed && f.LastWanted == 95, "a bypass raise must be flagged");
+            f.Update(4000, 95, linear, 20, 45, 90);
+            Debug.Assert(!f.LastBypassed, "holding an already-raised speed is not a new bypass");
+            f.Update(6000, 50, linear, 20, 45, 90);
+            Debug.Assert(!f.LastBypassed && f.LastWanted == 50, "below the bypass temp nothing is flagged");
+
+            string line = FanLog.Format(new FanLogRow { Type = "event", CpuTemp = 70, Note = "a, \"b\"" });
+            Debug.Assert(line.EndsWith(",\"a, \"\"b\"\"\""), "notes with commas/quotes must be CSV-quoted");
+            Debug.Assert(line.Split(',').Length >= 21, "every row must have all columns");
+
+            var s = (Up: 20, Down: 45, CpuBypass: 90, GpuBypass: 85);
+            var burst = new StepTiming
+            {
+                Step = new TestStep("b", TestKind.Burst, 8, 0, 3, 50, ""),
+                StartMs = 0, LoadStartMs = 0, LoadEndMs = 3000, EndMs = 53000
+            };
+            List<FanLogRow> BurstRows(bool bypass)
+            {
+                var rows = new List<FanLogRow>();
+                for (long ms = 0; ms <= 52000; ms += 2000)
+                {
+                    bool spike = bypass && ms >= 2000;
+                    rows.Add(new FanLogRow { Type = "tick", Ms = ms, CpuTemp = ms == 2000 ? 95 : 60, CpuHeld = spike ? 70 : 30, CpuBypass = bypass && ms == 2000 ? 1 : 0 });
+                    rows.Add(new FanLogRow { Type = "probe", Ms = ms + 1000, CpuTemp = ms == 0 ? 95 : 60, CpuRpm = 2500 });
+                }
+                return rows;
+            }
+            var ignored = FanTestRunner.Analyze(BurstRows(false), burst, s);
+            Debug.Assert(ignored.Verdict.StartsWith("OK") && !ignored.BypassRaised, "an ignored spike must pass");
+            var bypassed = FanTestRunner.Analyze(BurstRows(true), burst, s);
+            Debug.Assert(bypassed.BypassRaised && bypassed.Verdict.Contains("BYPASS"), "a bypass-raised spike must be called out");
+            Debug.Assert(bypassed.RaiseAfterLoadStartSec == 2, "raise time is measured from load start");
+
+            var fw = new StepTiming
+            {
+                Step = new TestStep("fw", TestKind.Firmware, 8, 20, 45, 30, ""),
+                StartMs = 0, LoadStartMs = 20000, LoadEndMs = 65000, EndMs = 95000
+            };
+            var fwRows = new List<FanLogRow>();
+            for (long ms = 0; ms <= 95000; ms += 500)
+                fwRows.Add(new FanLogRow { Type = "probe", Ms = ms, CpuTemp = 80, CpuRpm = ms < 30000 ? 2500 : 4500, GpuRpm = 2400 });
+            var over = FanTestRunner.Analyze(fwRows, fw, s);
+            Debug.Assert(over.FirmwareOverride && over.SettledCpuRpm == 2500 && over.PeakCpuRpm == 4500, "RPM rising with no writes is a firmware override");
+            fwRows.Add(new FanLogRow { Type = "write", Ms = 40000, CpuWritten = 60, Note = "speed ok from X" });
+            Debug.Assert(!FanTestRunner.Analyze(fwRows, fw, s).FirmwareOverride, "writes during the step make it inconclusive");
+
+            Debug.Assert(FanTestRunner.BuildSteps(8).Sum(x => x.TotalSec) < 12 * 60, "load test should stay under ~12 minutes");
         }
 
         [Conditional("DEBUG")]

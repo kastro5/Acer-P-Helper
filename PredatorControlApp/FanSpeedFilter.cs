@@ -20,15 +20,22 @@ namespace PredatorControlApp
 
         public int HeldSpeed { get; private set; } = -1;
 
+        // Diagnostics: what the curve asked for on the last sample, and whether the bypass fired.
+        public int LastWanted { get; private set; } = -1;
+        public bool LastBypassed { get; private set; }
+
         public void Reset()
         {
             _samples.Clear();
             HeldSpeed = -1;
+            LastWanted = -1;
+            LastBypassed = false;
         }
 
         public int Update(long nowMs, int temp, Func<int, int> curve,
                           int upDelaySec, int downDelaySec, int bypassTemp)
         {
+            LastBypassed = false;
             if (temp <= 0) return HeldSpeed;
 
             _samples.Add((nowMs, temp));
@@ -36,6 +43,7 @@ namespace PredatorControlApp
             _samples.RemoveAll(s => s.Ms < nowMs - keepMs);
 
             int liveSpeed = curve(temp);
+            LastWanted = liveSpeed;
 
             if (HeldSpeed < 0)
             {
@@ -50,8 +58,10 @@ namespace PredatorControlApp
 
             if (bypassTemp > 0 && temp >= bypassTemp)
             {
+                int normalTarget = upValid ? Math.Max(upSpeed, HeldSpeed) : HeldSpeed;
                 upSpeed = upValid ? Math.Max(upSpeed, liveSpeed) : liveSpeed;
                 upValid = true;
+                LastBypassed = upSpeed > normalTarget;
             }
 
             if (upValid && upSpeed > HeldSpeed)

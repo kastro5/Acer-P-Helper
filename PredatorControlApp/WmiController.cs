@@ -1,4 +1,5 @@
 using System.Management;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -128,35 +129,39 @@ namespace PredatorControlApp
             SyncWindowsPowerMode(mode);
         }
 
-        public void SetFanBehavior(byte mode)
+        public void SetFanBehavior(byte mode, [CallerMemberName] string caller = "")
         {
-            SendCommand("SetGamingFanBehavior", (ulong)(0x09 | ((ulong)mode << 16) | ((ulong)mode << 22)));
+            var (ok, _) = SendCommand("SetGamingFanBehavior", (ulong)(0x09 | ((ulong)mode << 16) | ((ulong)mode << 22)));
+            FanLog.FanWrite(null, null, ok, caller, $"behavior=0x{mode:X2}");
 
             if (mode == 0x03)
-                SetFanSpeed(_customCpuFanSpeed, _customGpuFanSpeed);
+                SetFanSpeed(_customCpuFanSpeed, _customGpuFanSpeed, caller);
         }
 
-        public bool SetFanSpeed(byte cpuSpeed, byte gpuSpeed)
+        public bool SetFanSpeed(byte cpuSpeed, byte gpuSpeed, [CallerMemberName] string caller = "")
         {
             _customCpuFanSpeed = cpuSpeed;
             _customGpuFanSpeed = gpuSpeed;
 
             var (cpuOk, _) = SendCommand("SetGamingFanSpeed", 0x01UL | ((ulong)cpuSpeed << 8));
             var (gpuOk, _) = SendCommand("SetGamingFanSpeed", 0x04UL | ((ulong)gpuSpeed << 8));
+            FanLog.FanWrite(cpuSpeed, gpuSpeed, cpuOk && gpuOk, caller);
             return cpuOk && gpuOk;
         }
 
-        public bool SetCpuFanSpeed(byte speed)
+        public bool SetCpuFanSpeed(byte speed, [CallerMemberName] string caller = "")
         {
             _customCpuFanSpeed = speed;
             var (ok, _) = SendCommand("SetGamingFanSpeed", 0x01UL | ((ulong)speed << 8));
+            FanLog.FanWrite(speed, null, ok, caller);
             return ok;
         }
 
-        public bool SetGpuFanSpeed(byte speed)
+        public bool SetGpuFanSpeed(byte speed, [CallerMemberName] string caller = "")
         {
             _customGpuFanSpeed = speed;
             var (ok, _) = SendCommand("SetGamingFanSpeed", 0x04UL | ((ulong)speed << 8));
+            FanLog.FanWrite(null, speed, ok, caller);
             return ok;
         }
 

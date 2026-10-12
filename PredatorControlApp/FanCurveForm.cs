@@ -64,6 +64,7 @@ namespace PredatorControlApp
         #region Events
 
         public event EventHandler<FanCurveApplyEventArgs>? ApplyClicked;
+        public event EventHandler? DiagnosticsClicked;
 
         #endregion
 
@@ -211,6 +212,16 @@ namespace PredatorControlApp
             };
             _btnReset.Click += BtnReset_Click;
             Controls.Add(_btnReset);
+
+            int diagWidth = 116;
+            var btnDiagnostics = new PredatorButton
+            {
+                Text = "Diagnostics",
+                Size = new Size(diagWidth, btnHeight),
+                Location = new Point((ClientSize.Width - diagWidth) / 2, btnY)
+            };
+            btnDiagnostics.Click += (s, e) => DiagnosticsClicked?.Invoke(this, EventArgs.Empty);
+            Controls.Add(btnDiagnostics);
 
             _btnApply = new PredatorButton
             {

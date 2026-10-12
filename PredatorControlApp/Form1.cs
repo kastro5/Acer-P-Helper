@@ -8,7 +8,7 @@ using Microsoft.Win32;
 namespace PredatorControlApp
 {
     [SupportedOSPlatform("windows")]
-    public partial class Form1 : Form
+    public partial class Form1 : Form, IFanTestHost
     {
         #region Win32 Interop — Single Instance
 
@@ -168,6 +168,9 @@ namespace PredatorControlApp
         private int _curveDownDelay = FanSpeedFilter.DefaultDownDelay;
         private int _cpuBypassTemp = FanSpeedFilter.DefaultCpuBypass;
         private int _gpuBypassTemp = FanSpeedFilter.DefaultGpuBypass;
+        private FanDiagnosticsForm? _fanDiagForm;
+        private readonly CpuUsage _cpuUsage = new();
+        private bool _testFixedOverride;
         
         private PredatorButton? _activePowerBtn, _activeFanBtn, _activeDisplayBtn;
         private bool _isUpdatingBattery;
@@ -479,6 +482,7 @@ namespace PredatorControlApp
             _trayMenu.Items.Add(_trayBatteryMenu);
             _trayMenu.Items.Add(rgbMenu);
             _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Fan Diagnostics…", null, (s, e) => OpenFanDiagnostics());
             _trayMenu.Items.Add("Open Dashboard", null, (s, e) => ShowApp());
             _trayMenu.Items.Add("Exit", null, (s, e) => { _isClosing = true; Application.Exit(); });
         }
@@ -701,6 +705,7 @@ namespace PredatorControlApp
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
                 ResetFanFilters();
+                FanLog.Event("user: fixed speed mode");
                 HighlightBtn(_btnFixedSpeed, ref _activeCustomSubBtn);
                 SaveState("FanCurveEnabled", 0);
 
@@ -956,6 +961,7 @@ namespace PredatorControlApp
 
         private void ApplyPowerMode(byte mode, PredatorButton btn)
         {
+            FanLog.Event($"power mode 0x{mode:X2}");
             _wmi.SetPowerMode(mode);
             HighlightBtn(btn, ref _activePowerBtn);
             SaveState("Power", mode);
@@ -1050,6 +1056,7 @@ namespace PredatorControlApp
             _fanCurveForm.SetGpuCurve(_gpuCurvePoints);
             _fanCurveForm.SetFilterSettings(_curveUpDelay, _curveDownDelay, _cpuBypassTemp, _gpuBypassTemp);
             _fanCurveForm.UpdateTemps(_cpuTemp, _gpuTemp);
+            _fanCurveForm.DiagnosticsClicked += (s, e) => OpenFanDiagnostics();
 
             _fanCurveForm.ApplyClicked += (s, args) =>
             {
@@ -1061,6 +1068,7 @@ namespace PredatorControlApp
                 _gpuBypassTemp = args.GpuBypass;
 
                 ResetFanFilters();
+                FanLog.Event("user: curve applied | " + DescribeFanSettings().Replace(Environment.NewLine, " | "));
                 int cpuSpeed = SeedCpuCurveSpeed();
                 int gpuSpeed = SeedGpuCurveSpeed();
 
@@ -1259,6 +1267,7 @@ namespace PredatorControlApp
         private async Task ApplyGameProfile(GameProfile profile)
         {
             _lblGameSyncStatus.Text = $"Active \u2014 {profile.DisplayName}";
+            FanLog.Event($"GameSync: applying profile {profile.DisplayName}");
 
             _gameSync.SetPreGameSnapshot(CaptureCurrentState());
 
@@ -1331,6 +1340,7 @@ namespace PredatorControlApp
 
         private async Task RestoreSnapshot(DashboardSnapshot snap, bool skipRgb = false)
         {
+            FanLog.Event("GameSync: restoring previous settings");
             ApplyPowerMode(snap.PowerMode, PowerByteToBtn(snap.PowerMode));
             ApplyFanMode(snap.FanMode, FanByteToBtn(snap.FanMode));
 
@@ -1421,6 +1431,8 @@ namespace PredatorControlApp
             try
             {
                 using var key = Registry.CurrentUser.CreateSubKey(@"SOFTWARE\PredatorControl");
+                FanLog.SetEnabled(GetInt(key, "FanLogEnabled", 1, 0, 1) == 1);
+                FanLog.Event("app start");
                 int savedPower = GetInt(key, "Power", 0x01, 0x00, 0xFF);
                 int savedFan = GetInt(key, "Fan", 0x01, 0x00, 0xFF);
                 int savedRgbMode = GetInt(key, "RGB_Mode", 3, 0, 7);
@@ -1570,6 +1582,7 @@ namespace PredatorControlApp
 
             try
             {
+                FanLog.Event("resumed from sleep");
                 _isPluggedIn = null;
                 _lastCurveCpuSpeed = -1;
                 _lastCurveGpuSpeed = -1;
@@ -1653,6 +1666,7 @@ namespace PredatorControlApp
             _trayIcon.Text = $"Predator Control\nCPU: {(_cpuTemp > 0 ? $"{_cpuTemp}°C" : "N/A")}  GPU: {(_gpuTemp > 0 ? $"{_gpuTemp}°C" : "N/A")}";
 
             ApplyFanCurve();
+            LogTick(cpuRpm, gpuRpm);
 
             if (_fanCurveForm != null && !_fanCurveForm.IsDisposed)
             {
@@ -1712,6 +1726,99 @@ namespace PredatorControlApp
             }
         }
 
+        private void LogTick(int cpuRpm, int gpuRpm)
+        {
+            bool curve = _fanCurveEnabled && GetCurrentFanByte() == 0x03;
+            static int? Val(int v, bool on) => on && v >= 0 ? v : null;
+
+            FanLog.Tick(new FanLogRow
+            {
+                FanMode = FanModeName(GetCurrentFanByte()),
+                Curve = curve ? 1 : 0,
+                Ac = _isPluggedIn.HasValue ? (_isPluggedIn.Value ? 1 : 0) : null,
+                Power = _lblPowerStatus.Text,
+                CpuTemp = _cpuTemp,
+                GpuTemp = _gpuTemp,
+                CpuLoad = _cpuUsage.Sample(),
+                CpuWant = Val(_cpuFanFilter.LastWanted, curve),
+                CpuHeld = Val(_cpuFanFilter.HeldSpeed, curve),
+                CpuBypass = curve ? (_cpuFanFilter.LastBypassed ? 1 : 0) : null,
+                GpuWant = Val(_gpuFanFilter.LastWanted, curve),
+                GpuHeld = Val(_gpuFanFilter.HeldSpeed, curve),
+                GpuBypass = curve ? (_gpuFanFilter.LastBypassed ? 1 : 0) : null,
+                CpuRpm = cpuRpm,
+                GpuRpm = gpuRpm,
+            });
+        }
+
+        private static string FanModeName(byte mode) => mode switch
+        {
+            0x02 => "max",
+            0x03 => "custom",
+            _ => "auto"
+        };
+
+        private void OpenFanDiagnostics()
+        {
+            if (_fanDiagForm != null && !_fanDiagForm.IsDisposed)
+            {
+                _fanDiagForm.Activate();
+                return;
+            }
+
+            _fanDiagForm = new FanDiagnosticsForm(this, FanLog.Enabled);
+            _fanDiagForm.LoggingToggled += (s, on) =>
+            {
+                FanLog.SetEnabled(on);
+                SaveState("FanLogEnabled", on ? 1 : 0);
+            };
+            _fanDiagForm.FormClosed += (s, e) => _fanDiagForm = null;
+            if (Visible) _fanDiagForm.Show(this);
+            else _fanDiagForm.Show();
+        }
+
+        private string DescribeFanSettings()
+        {
+            static string Curve(List<Point> pts) => string.Join(" ", pts.Select(p => $"{p.X}°C:{p.Y}%"));
+            string ac = _isPluggedIn switch { true => "AC", false => "battery", _ => "unknown" };
+            return $"Fan mode {FanModeName(GetCurrentFanByte())}{(_fanCurveEnabled ? " + curve" : "")}, power mode {_lblPowerStatus.Text}, power source {ac}" + Environment.NewLine +
+                   $"Ramp up {FanSpeedFilter.DelayLabel(_curveUpDelay)}, ramp down {FanSpeedFilter.DelayLabel(_curveDownDelay)}, " +
+                   $"CPU bypass {FanSpeedFilter.BypassLabel(_cpuBypassTemp)}, GPU bypass {FanSpeedFilter.BypassLabel(_gpuBypassTemp)}" + Environment.NewLine +
+                   $"CPU curve: {Curve(_cpuCurvePoints)}" + Environment.NewLine +
+                   $"GPU curve: {Curve(_gpuCurvePoints)}";
+        }
+
+        #region IFanTestHost
+
+        bool IFanTestHost.CurveActive => _fanCurveEnabled && GetCurrentFanByte() == 0x03;
+
+        (int Up, int Down, int CpuBypass, int GpuBypass) IFanTestHost.FilterSettings =>
+            (_curveUpDelay, _curveDownDelay, _cpuBypassTemp, _gpuBypassTemp);
+
+        string IFanTestHost.DescribeFanSettings() => DescribeFanSettings();
+
+        (int CpuTemp, int GpuTemp, int CpuRpm, int GpuRpm) IFanTestHost.ReadSensors() =>
+            (_wmi.CpuTemp, _wmi.GpuTemp, _wmi.CpuFanRpm, _wmi.GpuFanRpm);
+
+        // Temporarily turns the curve off and pins both fans; not saved to the registry.
+        void IFanTestHost.BeginFixedSpeedOverride(int cpuPercent, int gpuPercent)
+        {
+            _testFixedOverride = true;
+            _fanCurveEnabled = false;
+            _wmi.SetCpuFanSpeed((byte)cpuPercent);
+            _wmi.SetGpuFanSpeed((byte)gpuPercent);
+        }
+
+        // Re-enables the curve; the next telemetry tick applies the live temp straight away.
+        void IFanTestHost.EndFixedSpeedOverride()
+        {
+            if (!_testFixedOverride) return;
+            _testFixedOverride = false;
+            _fanCurveEnabled = true;
+        }
+
+        #endregion
+
         private void ResetFanFilters()
         {
             _cpuFanFilter.Reset();
@@ -1755,6 +1862,7 @@ namespace PredatorControlApp
 
         private void ApplyPowerRules(bool pluggedIn)
         {
+            FanLog.Event(pluggedIn ? "power source: AC" : "power source: battery");
             if (pluggedIn)
             {
                 _btnPerform.Enabled = true;
