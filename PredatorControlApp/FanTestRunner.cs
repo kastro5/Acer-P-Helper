@@ -49,6 +49,7 @@ namespace PredatorControlApp
         private const int ProbeIntervalMs = 500;
 
         private readonly IFanTestHost _host;
+        private readonly double _timeScale;
         private readonly List<TestStep> _steps;
         private readonly List<FanLogRow> _rows = new();
         private readonly List<StepTiming> _timings = new();
@@ -61,11 +62,13 @@ namespace PredatorControlApp
         public event Action<string>? StatusChanged;
 
         public bool Running => _cts != null;
-        public int TotalSec => _steps.Sum(s => s.TotalSec);
+        public int TotalSec => (int)Math.Ceiling(_steps.Sum(s => s.TotalSec) * _timeScale);
 
-        public FanTestRunner(IFanTestHost host)
+        // timeScale < 1 shortens every step; only the CI smoke test uses it.
+        public FanTestRunner(IFanTestHost host, double timeScale = 1.0)
         {
             _host = host;
+            _timeScale = timeScale;
             _steps = BuildSteps(Environment.ProcessorCount);
             _probeTimer.Tick += ProbeTick;
         }
@@ -124,7 +127,7 @@ namespace PredatorControlApp
 
                     try
                     {
-                        await Task.Delay(step.PreSec * 1000, ct);
+                        await Task.Delay(Scaled(step.PreSec), ct);
 
                         t.LoadStartMs = Environment.TickCount64;
                         if (step.Threads > 0)
@@ -132,13 +135,13 @@ namespace PredatorControlApp
                             _load.Start(step.Threads);
                             FanLog.Event($"load on: {step.Threads} threads for {step.LoadSec} s");
                         }
-                        await Task.Delay(step.LoadSec * 1000, ct);
+                        await Task.Delay(Scaled(step.LoadSec), ct);
 
                         _load.Stop();
                         t.LoadEndMs = Environment.TickCount64;
                         if (step.Threads > 0) FanLog.Event("load off");
 
-                        await Task.Delay(step.RestSec * 1000, ct);
+                        await Task.Delay(Scaled(step.RestSec), ct);
                     }
                     finally
                     {
@@ -176,6 +179,8 @@ namespace PredatorControlApp
             return FanLog.CreateReport(summary, csv);
         }
 
+        private int Scaled(int seconds) => (int)(seconds * 1000 * _timeScale);
+
         private void OnRecorded(FanLogRow row)
         {
             lock (_rows) _rows.Add(row);
@@ -191,7 +196,7 @@ namespace PredatorControlApp
                 if (_stepIndex >= _steps.Count) return;
                 var step = _steps[_stepIndex];
                 long now = Environment.TickCount64;
-                double inStep = (now - _stepStartMs) / 1000.0;
+                double inStep = (now - _stepStartMs) / 1000.0 / _timeScale;
                 string state = inStep < step.PreSec ? "settling"
                              : inStep < step.PreSec + step.LoadSec && step.Threads > 0 ? "LOAD ON"
                              : "cooling";
@@ -422,6 +427,64 @@ namespace PredatorControlApp
         private static string Pct(int v) => v < 0 ? "n/a" : $"{v}%";
 
         #endregion
+    }
+
+    // CI check of the whole load-test flow (timers, load threads, logging, summary, zip) with fake sensors.
+    // Exit code 0 = report produced with every step; anything else = failure.
+    [SupportedOSPlatform("windows")]
+    internal static class FanTestSmoke
+    {
+        private sealed class FakeHost : IFanTestHost
+        {
+            public bool CurveActive => true;
+            public (int Up, int Down, int CpuBypass, int GpuBypass) FilterSettings => (20, 45, 90, 85);
+            public string DescribeFanSettings() => "smoke test (fake sensors)";
+            public (int CpuTemp, int GpuTemp, int CpuRpm, int GpuRpm) ReadSensors() => (60, 55, 2500, 2400);
+            public void BeginFixedSpeedOverride(int cpuPercent, int gpuPercent) => FanLog.FanWrite(cpuPercent, gpuPercent, true, "FakeHost");
+            public void EndFixedSpeedOverride() { }
+        }
+
+        public static int Run()
+        {
+            int code = 1;
+            var ctx = new ApplicationContext();
+            var kick = new System.Windows.Forms.Timer { Interval = 1 };
+            kick.Tick += async (s, e) =>
+            {
+                kick.Stop();
+                try
+                {
+                    FanLog.SetEnabled(true);
+                    using var runner = new FanTestRunner(new FakeHost(), timeScale: 0.02);
+                    string zipPath = await runner.RunAsync();
+
+                    using var zip = System.IO.Compression.ZipFile.OpenRead(zipPath);
+                    var summaryEntry = zip.GetEntry("summary.txt");
+                    string summary = "";
+                    if (summaryEntry != null)
+                        using (var r = new StreamReader(summaryEntry.Open())) summary = r.ReadToEnd();
+
+                    int steps = FanTestRunner.BuildSteps(Environment.ProcessorCount).Count;
+                    bool ok = summary.Contains($"[{steps}] ")
+                           && summary.Contains("CONCLUSIONS")
+                           && zip.Entries.Any(x => x.Name.StartsWith("fantest-") && x.Length > 0)
+                           && zip.Entries.Any(x => x.Name.StartsWith("fanlog-") && x.Length > 0);
+                    code = ok ? 0 : 2;
+                }
+                catch (Exception ex)
+                {
+                    try { File.WriteAllText(Path.Combine(FanLog.Folder, "smoke-error.txt"), ex.ToString()); } catch { }
+                    code = 3;
+                }
+                finally
+                {
+                    ctx.ExitThread();
+                }
+            };
+            kick.Start();
+            Application.Run(ctx);
+            return code;
+        }
     }
 
     // Busy-loops on N threads at below-normal priority so the UI stays responsive.

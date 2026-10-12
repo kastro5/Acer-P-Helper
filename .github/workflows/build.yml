@@ -31,6 +31,23 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Self-checks failed (exit code $($p.ExitCode))" }
           Write-Host "Self-checks passed"
 
+      # Runs the whole fan load test at 2% speed with fake sensors and checks the report zip.
+      - name: Fan test smoke run
+        shell: pwsh
+        run: |
+          $exe = "PredatorControlApp/bin/Debug/net10.0-windows/PredatorControlApp.exe"
+          $p = Start-Process $exe -ArgumentList '--fantest-smoke' -Wait -PassThru
+          $logs = Join-Path $env:LOCALAPPDATA "PredatorControl/logs"
+          $err = Join-Path $logs "smoke-error.txt"
+          if (Test-Path $err) { Get-Content $err }
+          $zip = Get-ChildItem $logs -Filter "PredatorFanReport-*.zip" | Sort-Object LastWriteTime | Select-Object -Last 1
+          if ($zip) {
+            Expand-Archive $zip.FullName -DestinationPath smoke-report -Force
+            Get-ChildItem smoke-report | Format-Table Name, Length
+            Get-Content smoke-report/summary.txt
+          }
+          if ($p.ExitCode -ne 0) { throw "Fan test smoke run failed (exit code $($p.ExitCode))" }
+
       - name: Publish
         shell: pwsh
         run: |
